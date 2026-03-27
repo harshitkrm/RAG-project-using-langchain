@@ -1,0 +1,61 @@
+import os
+from dotenv import load_dotenv
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_community.vectorstores import FAISS
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnableParallel
+
+load_dotenv()
+
+video_id = "Gfr50f6ZBvo"
+
+try:
+    transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
+    transcript = " ".join(chunk["text"] for chunk in transcript_list)
+except TranscriptsDisabled:
+    transcript = ""
+
+splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+docs = splitter.create_documents([transcript])
+
+embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+vector_store = FAISS.from_documents(docs, embeddings)
+
+retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 4})
+
+prompt = PromptTemplate(
+    template="""
+You are an AI assistant that answers questions strictly using the provided context.
+If the answer is not present, say you don't know.
+
+Context:
+{context}
+
+Question:
+{question}
+"""
+)
+
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
+parser = StrOutputParser()
+
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
+
+chain = (
+    RunnableParallel({
+        "context": retriever | format_docs,
+        "question": lambda x: x
+    })
+    | prompt
+    | llm
+    | parser
+)
+
+query = "What is deepmind"
+result = chain.invoke(query)
+
+print(result)
